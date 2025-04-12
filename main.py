@@ -1,6 +1,9 @@
 # Import required libraries
 from langchain_ollama import OllamaEmbeddings, OllamaLLM
 from langchain.text_splitter import RecursiveCharacterTextSplitter
+#from langchain.embeddings import SentenceTransformerEmbeddings
+from langchain_community.embeddings import SentenceTransformerEmbeddings
+from sentence_transformers import CrossEncoder
 import chromadb
 import os
 import fitz  # PyMuPDF
@@ -8,9 +11,20 @@ import fitz  # PyMuPDF
 # Define the LLM model to be used
 llm_model = "llama3.2"  #llama3.2
 
+#embedding_model = SentenceTransformerEmbeddings(model_name="all-MiniLM-L6-v2")
+
+# Config: Toggle to force re-ingestion even if DB exists
+REINGEST_DATA = False
+CHROMA_DB_DIR = os.path.join(os.getcwd(), "chroma_db")
+
+# Detect if the chroma db path already has data
+is_existing_db = os.path.isdir(CHROMA_DB_DIR) and bool(os.listdir(CHROMA_DB_DIR))
+print(f"ChromaDB persistence found: {is_existing_db}")
+
 # Configure ChromaDB
 # Initialize the ChromaDB client with persistent storage in the current directory
-chroma_client = chromadb.PersistentClient(path=os.path.join(os.getcwd(), "chroma_db"))
+#chroma_client = chromadb.PersistentClient(path=os.path.join(os.getcwd(), "chroma_db"))
+chroma_client = chromadb.PersistentClient(path=CHROMA_DB_DIR)
 
 # Define a custom embedding function for ChromaDB using Ollama
 class ChromaDBEmbeddingFunction:
@@ -26,6 +40,7 @@ class ChromaDBEmbeddingFunction:
             input = [input]
         return self.langchain_embeddings.embed_documents(input)
 
+
 # Initialize the embedding function with Ollama embeddings
 embedding = ChromaDBEmbeddingFunction(
     OllamaEmbeddings(
@@ -33,6 +48,11 @@ embedding = ChromaDBEmbeddingFunction(
         base_url="http://localhost:11434"  # Adjust the base URL as per your Ollama server configuration
     )
 )
+
+# Initialize the embedding function with Ollama embeddings
+#embedding = ChromaDBEmbeddingFunction(embedding_model)
+
+#embeddings = SentenceTransformerEmbeddings(model_name="all-MiniLM-L6-v2")
 
 # Define a collection for the RAG workflow
 collection_name = "rag_collection_demo_1"
@@ -88,10 +108,14 @@ def add_documents_to_collection(documents, ids):
         documents (list of str): The documents to add.
         ids (list of str): Unique IDs for the documents.
     """
+    if is_existing_db and not REINGEST_DATA:
+        print("Skipping ingestion — existing ChromaDB detected.")
+
     collection.add(
         documents=documents,
         ids=ids
     )
+    
 
 
 def add_files_from_directory(directory_path, prefix="doc"):
@@ -102,6 +126,11 @@ def add_files_from_directory(directory_path, prefix="doc"):
         directory_path (str): Path to the directory containing PDF and TXT files.
         prefix (str): Prefix to use for document IDs.
     """
+
+    if is_existing_db and not REINGEST_DATA:
+        print("Skipping document ingestion — existing ChromaDB detected.")
+        return
+
     if not os.path.exists(directory_path):
         print(f"Directory not found: {directory_path}")
         return
@@ -141,9 +170,11 @@ def add_files_from_directory(directory_path, prefix="doc"):
 documents = [
     "Artificial intelligence is the simulation of human intelligence processes by machines.",
     "Python is a programming language that lets you work quickly and integrate systems more effectively.",
-    "ChromaDB is a vector database designed for AI applications."
+    "ChromaDB is a vector database designed for AI applications.",
+    "Television is called an Idiot Box because it is a box that hardly makes you learn to think.",
+    "Grapes are a type of fruit that grow in clusters on vines.",
 ]
-doc_ids = ["doc1", "doc2", "doc3"]
+doc_ids = ["doc1", "doc2", "doc3", "doc4", "doc5"]
 
 # Documents only need to be added once or whenever an update is required. 
 # This line of code is included for demonstration purposes:
@@ -153,13 +184,6 @@ add_documents_to_collection(documents, doc_ids)
 data_directory  = "documents"
 add_files_from_directory(data_directory)
 
-############---DEBUG ONLY START ---############
-print("Total documents in collection:", collection.count())
-sample = collection.query(query_texts=["Speedy Sid"], n_results=3)
-print("Query results sample:", sample["documents"])
-
-
-############---DEBUG ONLY END ---############
 
 # Function to query the ChromaDB collection
 def query_chromadb(query_text, n_results=1):
@@ -179,6 +203,27 @@ def query_chromadb(query_text, n_results=1):
     )
     return results["documents"], results["metadatas"]
 
+
+def query_rerank(collection, query, n=1):
+    model = CrossEncoder('cross-encoder/ms-marco-MiniLM-L-6-v2')  # small and fast
+    print("Total documents in collection:", collection.count())
+
+    sample = collection.query(query_texts=[query], n_results=20)
+    documents = sample["documents"][0]
+
+    #sample = collection.query(query_texts=[query], n_results=5)
+    #for i, doc in enumerate(documents):
+    #    print(f"\nRaw Query Result {i + 1}:", doc)
+
+    pairs = [[query, doc] for doc in documents]
+
+    scores = model.predict(pairs)
+    sorted_docs = [doc for _, doc in sorted(zip(scores, documents), key=lambda x: x[0], reverse=True)]
+    
+    context = "\n\n".join(sorted_docs[:n])  # Use top 3 reranked chunks
+    #print(f"\nReranked Sorted Query Result:", context)
+    return context
+
 # Function to interact with the Ollama LLM
 def query_ollama(prompt):
     """
@@ -194,30 +239,21 @@ def query_ollama(prompt):
     return llm.invoke(prompt)
 
 # RAG pipeline: Combine ChromaDB and Ollama for Retrieval-Augmented Generation
-def rag_pipeline(query_text):
-    """
-    Perform Retrieval-Augmented Generation (RAG) by combining ChromaDB and Ollama.
-    
-    Args:
-        query_text (str): The input query.
-    
-    Returns:
-        str: The generated response from Ollama augmented with retrieved context.
-    """
-    # Step 1: Retrieve relevant documents from ChromaDB
-    retrieved_docs, metadata = query_chromadb(query_text)
-    context = " ".join(retrieved_docs[0]) if retrieved_docs else "No relevant documents found."
-
-    # Step 2: Send the query along with the context to Ollama
-    augmented_prompt = f"Context: {context}\n\nQuestion: {query_text}\nAnswer:"
-    print("######## Augmented Prompt ########")
-    print(augmented_prompt)
-
-    response = query_ollama(augmented_prompt)
-    return response
+def rag_pipeline(query_text, n=1):
+    context = query_rerank(collection, query_text, n)
+    context = context if context else "No relevant documents found."
+    prompt = f"Context: {context}\n\n Instructions: Answer should be given based on the information available in the context. If information is not available in the context, then mention it could not be found in the context and general knowledge is used.     \n\n Question: {query_text}\nAnswer:"
+    print("\n######## Augmented Prompt ########")
+    print(prompt)
+    return query_ollama(prompt)
 
 # Example usage
 # Define a query to test the RAG pipeline
-query = "Who is Chikki in Speedy Sid?"  # Change the query as needed
-response = rag_pipeline(query)
+context_size = 1 # Abstract queries require bigger context(2-5), Higher values will result in more broad based response, at cost of halluciantion. Lower will be specific, but chance of missing information on complex queries.
+query = "What is good gene hypothesis?"  # Change the query as needed
+response = rag_pipeline(query,context_size)
 print("######## Response from LLM ########\n", response)
+
+
+
+

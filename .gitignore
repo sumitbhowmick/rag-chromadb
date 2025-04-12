@@ -1,2 +1,5 @@
-chroma_db/
+chroma_db*/
 not_read_docs/
+*.ipynb
+RAG-UI/
+mainsen.py
