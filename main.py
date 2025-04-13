@@ -249,8 +249,8 @@ def rag_pipeline(query_text, n=1):
 
 # Example usage
 # Define a query to test the RAG pipeline
-context_size = 1 # Abstract queries require bigger context(2-5), Higher values will result in more broad based response, at cost of halluciantion. Lower will be specific, but chance of missing information on complex queries.
-query = "What is good gene hypothesis?"  # Change the query as needed
+context_size = 3 # Abstract queries require bigger context(2-5), Higher values will result in more broad based response, at cost of halluciantion. Lower will be specific, but chance of missing information on complex queries.
+query = "Who are Sids friends?"  # Change the query as needed
 response = rag_pipeline(query,context_size)
 print("######## Response from LLM ########\n", response)
 

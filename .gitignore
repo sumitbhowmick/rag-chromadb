@@ -3,3 +3,5 @@ not_read_docs/
 *.ipynb
 RAG-UI/
 mainsen.py
+weaviate/
+*-old.*
